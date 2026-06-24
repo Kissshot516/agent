@@ -2,7 +2,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List
 
 from .paths import DATA_DIR, KNOWLEDGE_BASE_DIR
 
@@ -13,6 +13,14 @@ class ToolResult:
     tool_input: str
     data: Any
     summary: str
+
+
+@dataclass
+class ToolDefinition:
+    name: str
+    description: str
+    required_args: List[str]
+    handler: Callable[..., ToolResult]
 
 
 def query_tickets(keyword: str) -> ToolResult:
@@ -80,6 +88,72 @@ def search_knowledge_base(query: str) -> ToolResult:
         data=matches,
         summary="找到 {} 篇相关知识库文档".format(len(matches)),
     )
+
+
+TOOL_REGISTRY: Dict[str, ToolDefinition] = {
+    "query_tickets": ToolDefinition(
+        name="query_tickets",
+        description="按关键词查询企业工单。适合查客户反馈、故障标题、服务名、优先级或标签。",
+        required_args=["keyword"],
+        handler=query_tickets,
+    ),
+    "get_service_metrics": ToolDefinition(
+        name="get_service_metrics",
+        description="查询指定服务的错误率、P95 延迟、Redis 连接数、慢查询等指标。",
+        required_args=["service"],
+        handler=get_service_metrics,
+    ),
+    "search_knowledge_base": ToolDefinition(
+        name="search_knowledge_base",
+        description="按查询词检索运维手册、工单优先级规则和历史处理经验。",
+        required_args=["query"],
+        handler=search_knowledge_base,
+    ),
+}
+
+
+def list_tool_specs() -> List[Dict[str, Any]]:
+    return [
+        {
+            "name": tool.name,
+            "description": tool.description,
+            "required_args": tool.required_args,
+        }
+        for tool in TOOL_REGISTRY.values()
+    ]
+
+
+def execute_tool_call(name: str, args: Dict[str, Any]) -> ToolResult:
+    tool = TOOL_REGISTRY.get(name)
+    tool_input = json.dumps(args, ensure_ascii=False, sort_keys=True)
+    if tool is None:
+        return ToolResult(
+            name=name,
+            tool_input=tool_input,
+            data=None,
+            summary="工具调用被拒绝：{} 不在白名单中".format(name),
+        )
+
+    missing_args = [arg for arg in tool.required_args if arg not in args]
+    if missing_args:
+        return ToolResult(
+            name=name,
+            tool_input=tool_input,
+            data=None,
+            summary="工具调用被拒绝：缺少参数 {}".format(", ".join(missing_args)),
+        )
+
+    unknown_args = sorted(set(args) - set(tool.required_args))
+    if unknown_args:
+        return ToolResult(
+            name=name,
+            tool_input=tool_input,
+            data=None,
+            summary="工具调用被拒绝：包含未声明参数 {}".format(", ".join(unknown_args)),
+        )
+
+    safe_args = {arg: str(args[arg]) for arg in tool.required_args}
+    return tool.handler(**safe_args)
 
 
 def _load_json(path: Path) -> Any:

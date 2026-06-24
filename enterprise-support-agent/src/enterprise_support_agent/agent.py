@@ -1,9 +1,10 @@
+import json
 from dataclasses import dataclass
-from typing import List
+from typing import Any, Dict, List
 
 from .llm import LLMError
-from .prompts import build_report_messages
-from .tools import ToolResult, get_service_metrics, query_tickets, search_knowledge_base
+from .prompts import build_report_messages, build_tool_planning_messages
+from .tools import ToolResult, execute_tool_call, list_tool_specs
 
 
 @dataclass
@@ -21,42 +22,54 @@ class AgentAnswer:
     escalation_required: bool
 
 
+@dataclass
+class PlannedToolCall:
+    name: str
+    args: Dict[str, Any]
+
+
+@dataclass
+class ToolPlan:
+    service: str
+    tool_calls: List[PlannedToolCall]
+
+
 class EnterpriseSupportAgent:
-    """A tiny deterministic agent used to learn the agent loop before adding LLMs."""
+    """A learning-first agent with safe tool planning and execution."""
 
     def __init__(self, chat_model=None):
         self.chat_model = chat_model
 
     def answer(self, question: str) -> AgentAnswer:
-        service = self._infer_service(question)
-        topic = self._infer_topic(question, service)
+        plan, planning_step = self._plan_tools(question)
 
-        ticket_result = query_tickets(topic)
-        metric_result = get_service_metrics(service)
-        kb_query = self._build_knowledge_query(question, topic, metric_result.data)
-        kb_result = search_knowledge_base(kb_query)
+        steps = []
+        if planning_step is not None:
+            steps.append(planning_step)
 
-        steps = [
-            self._to_step(ticket_result),
-            self._to_step(metric_result),
-            self._to_step(kb_result),
-        ]
+        tool_results = []
+        for tool_call in plan.tool_calls:
+            result = execute_tool_call(tool_call.name, tool_call.args)
+            tool_results.append(result)
+            steps.append(self._to_step(result))
+
+        tickets, metrics, kb_matches = self._collect_evidence(tool_results)
 
         final_answer, escalation_required = self._synthesize(
             question=question,
-            service=service,
-            tickets=ticket_result.data,
-            metrics=metric_result.data,
-            kb_matches=kb_result.data,
+            service=plan.service,
+            tickets=tickets,
+            metrics=metrics,
+            kb_matches=kb_matches,
         )
         final_answer = self._maybe_generate_llm_report(
             fallback_answer=final_answer,
             steps=steps,
             question=question,
-            service=service,
-            tickets=ticket_result.data,
-            metrics=metric_result.data,
-            kb_matches=kb_result.data,
+            service=plan.service,
+            tickets=tickets,
+            metrics=metrics,
+            kb_matches=kb_matches,
             escalation_required=escalation_required,
         )
 
@@ -66,6 +79,103 @@ class EnterpriseSupportAgent:
             steps=steps,
             escalation_required=escalation_required,
         )
+
+    def _plan_tools(self, question: str):
+        fallback_plan = self._build_rule_based_plan(question)
+        if self.chat_model is None:
+            return fallback_plan, None
+
+        try:
+            messages = build_tool_planning_messages(
+                question=question,
+                tool_specs=list_tool_specs(),
+            )
+            raw_plan = self.chat_model.complete(messages)
+            plan = self._parse_tool_plan(raw_plan, fallback_service=fallback_plan.service)
+            step = AgentStep(
+                tool="llm_plan_tools",
+                tool_input=self.chat_model.display_name,
+                observation="模型生成工具计划：{}".format(
+                    ", ".join(tool_call.name for tool_call in plan.tool_calls)
+                ),
+            )
+            return plan, step
+        except (LLMError, ValueError, json.JSONDecodeError) as error:
+            step = AgentStep(
+                tool="llm_plan_tools",
+                tool_input=self.chat_model.display_name,
+                observation="模型工具规划失败，已回退规则计划：{}".format(error),
+            )
+            return fallback_plan, step
+
+    def _build_rule_based_plan(self, question: str) -> ToolPlan:
+        service = self._infer_service(question)
+        topic = self._infer_topic(question, service)
+        kb_query = "{} {} 工单优先级".format(question, topic)
+        if service == "payment-service":
+            kb_query = "{} Redis 超时 连接".format(kb_query)
+
+        return ToolPlan(
+            service=service,
+            tool_calls=[
+                PlannedToolCall(name="query_tickets", args={"keyword": topic}),
+                PlannedToolCall(name="get_service_metrics", args={"service": service}),
+                PlannedToolCall(name="search_knowledge_base", args={"query": kb_query}),
+            ],
+        )
+
+    def _parse_tool_plan(self, raw_plan: str, fallback_service: str) -> ToolPlan:
+        plan_payload = json.loads(self._extract_json_object(raw_plan))
+        if not isinstance(plan_payload, dict):
+            raise ValueError("工具计划必须是 JSON object")
+
+        service = str(plan_payload.get("service") or fallback_service)
+        raw_tool_calls = plan_payload.get("tool_calls")
+        if not isinstance(raw_tool_calls, list) or not raw_tool_calls:
+            raise ValueError("工具计划缺少 tool_calls")
+
+        tool_calls = []
+        for raw_call in raw_tool_calls:
+            if not isinstance(raw_call, dict):
+                raise ValueError("tool_calls 中存在非 object 项")
+
+            name = raw_call.get("name")
+            args = raw_call.get("args", {})
+            if not isinstance(name, str) or not name:
+                raise ValueError("工具调用缺少 name")
+            if not isinstance(args, dict):
+                raise ValueError("{} 的 args 必须是 object".format(name))
+
+            tool_calls.append(PlannedToolCall(name=name, args=args))
+
+        return ToolPlan(service=service, tool_calls=tool_calls)
+
+    def _extract_json_object(self, raw_text: str) -> str:
+        stripped = raw_text.strip()
+        if stripped.startswith("{") and stripped.endswith("}"):
+            return stripped
+
+        start = stripped.find("{")
+        end = stripped.rfind("}")
+        if start < 0 or end < start:
+            raise ValueError("模型没有返回 JSON object")
+        return stripped[start : end + 1]
+
+    def _collect_evidence(self, tool_results: List[ToolResult]):
+        tickets_by_id = {}
+        metrics = {}
+        kb_matches = []
+
+        for result in tool_results:
+            if result.name == "query_tickets" and isinstance(result.data, list):
+                for ticket in result.data:
+                    tickets_by_id[ticket["id"]] = ticket
+            elif result.name == "get_service_metrics" and isinstance(result.data, dict):
+                metrics.update(result.data)
+            elif result.name == "search_knowledge_base" and isinstance(result.data, list):
+                kb_matches.extend(result.data)
+
+        return list(tickets_by_id.values()), metrics, kb_matches
 
     def _infer_service(self, question: str) -> str:
         lowered = question.lower()
@@ -134,12 +244,6 @@ class EnterpriseSupportAgent:
                 )
             )
             return fallback_answer
-
-    def _build_knowledge_query(self, question, topic, metrics):
-        query_parts = [question, topic, "工单优先级"]
-        if metrics.get("redis_timeout_count", 0) > 0:
-            query_parts.extend(["Redis", "超时", "连接"])
-        return " ".join(query_parts)
 
     def _synthesize(self, question, service, tickets, metrics, kb_matches):
         if service == "payment-service":
