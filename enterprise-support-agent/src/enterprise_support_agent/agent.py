@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 from typing import List
 
+from .llm import LLMError
+from .prompts import build_report_messages
 from .tools import ToolResult, get_service_metrics, query_tickets, search_knowledge_base
 
 
@@ -21,6 +23,9 @@ class AgentAnswer:
 
 class EnterpriseSupportAgent:
     """A tiny deterministic agent used to learn the agent loop before adding LLMs."""
+
+    def __init__(self, chat_model=None):
+        self.chat_model = chat_model
 
     def answer(self, question: str) -> AgentAnswer:
         service = self._infer_service(question)
@@ -43,6 +48,16 @@ class EnterpriseSupportAgent:
             tickets=ticket_result.data,
             metrics=metric_result.data,
             kb_matches=kb_result.data,
+        )
+        final_answer = self._maybe_generate_llm_report(
+            fallback_answer=final_answer,
+            steps=steps,
+            question=question,
+            service=service,
+            tickets=ticket_result.data,
+            metrics=metric_result.data,
+            kb_matches=kb_result.data,
+            escalation_required=escalation_required,
         )
 
         return AgentAnswer(
@@ -77,6 +92,48 @@ class EnterpriseSupportAgent:
             tool_input=result.tool_input,
             observation=result.summary,
         )
+
+    def _maybe_generate_llm_report(
+        self,
+        fallback_answer,
+        steps,
+        question,
+        service,
+        tickets,
+        metrics,
+        kb_matches,
+        escalation_required,
+    ):
+        if self.chat_model is None:
+            return fallback_answer
+
+        try:
+            messages = build_report_messages(
+                question=question,
+                service=service,
+                tickets=tickets,
+                metrics=metrics,
+                kb_matches=kb_matches,
+                escalation_required=escalation_required,
+            )
+            answer = self.chat_model.complete(messages)
+            steps.append(
+                AgentStep(
+                    tool="llm_generate_report",
+                    tool_input=self.chat_model.display_name,
+                    observation="模型已基于工具证据生成报告",
+                )
+            )
+            return answer
+        except LLMError as error:
+            steps.append(
+                AgentStep(
+                    tool="llm_generate_report",
+                    tool_input=self.chat_model.display_name,
+                    observation="模型调用失败，已回退规则报告：{}".format(error),
+                )
+            )
+            return fallback_answer
 
     def _build_knowledge_query(self, question, topic, metrics):
         query_parts = [question, topic, "工单优先级"]
