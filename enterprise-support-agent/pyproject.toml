@@ -1,0 +1,12 @@
+[project]
+name = "enterprise-support-agent"
+version = "0.1.0"
+description = "A learning-first enterprise ticket analysis agent."
+requires-python = ">=3.9"
+dependencies = []
+
+[project.scripts]
+support-agent = "enterprise_support_agent.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

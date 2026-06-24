@@ -1,0 +1,46 @@
+[
+  {
+    "id": "TCK-1001",
+    "created_at": "2026-06-22T09:13:00+08:00",
+    "customer": "Acme Retail",
+    "service": "payment-service",
+    "priority": "P1",
+    "status": "open",
+    "title": "支付失败率升高",
+    "description": "大量用户反馈提交订单后支付失败，错误提示为支付网关超时。",
+    "tags": ["payment", "timeout", "redis"]
+  },
+  {
+    "id": "TCK-1002",
+    "created_at": "2026-06-22T10:05:00+08:00",
+    "customer": "Northwind Mall",
+    "service": "payment-service",
+    "priority": "P1",
+    "status": "open",
+    "title": "支付接口 P95 延迟异常",
+    "description": "支付接口 P95 从 320ms 上升到 3600ms，部分请求返回 RedisTimeoutError。",
+    "tags": ["payment", "latency", "redis"]
+  },
+  {
+    "id": "TCK-1003",
+    "created_at": "2026-06-22T11:20:00+08:00",
+    "customer": "Example Logistics",
+    "service": "order-service",
+    "priority": "P2",
+    "status": "open",
+    "title": "订单列表加载慢",
+    "description": "运营后台订单列表查询变慢，慢查询日志显示缺少组合索引。",
+    "tags": ["order", "mysql", "slow-query"]
+  },
+  {
+    "id": "TCK-1004",
+    "created_at": "2026-06-21T17:40:00+08:00",
+    "customer": "Contoso Travel",
+    "service": "gateway",
+    "priority": "P3",
+    "status": "resolved",
+    "title": "网关短时 502",
+    "description": "灰度发布期间出现短时 502，回滚后恢复。",
+    "tags": ["gateway", "deploy", "502"]
+  }
+]

@@ -1,0 +1,35 @@
+{
+  "payment-service": {
+    "window": "2026-06-22 09:00-11:00 +08:00",
+    "error_rate": "8.7%",
+    "baseline_error_rate": "0.4%",
+    "p95_latency_ms": 3600,
+    "baseline_p95_latency_ms": 320,
+    "redis_connected_clients": 500,
+    "redis_max_clients": 500,
+    "redis_timeout_count": 1842,
+    "database_slow_queries": 3
+  },
+  "order-service": {
+    "window": "2026-06-22 09:00-11:00 +08:00",
+    "error_rate": "1.2%",
+    "baseline_error_rate": "0.8%",
+    "p95_latency_ms": 980,
+    "baseline_p95_latency_ms": 420,
+    "redis_connected_clients": 88,
+    "redis_max_clients": 500,
+    "redis_timeout_count": 0,
+    "database_slow_queries": 96
+  },
+  "gateway": {
+    "window": "2026-06-22 09:00-11:00 +08:00",
+    "error_rate": "0.9%",
+    "baseline_error_rate": "0.5%",
+    "p95_latency_ms": 240,
+    "baseline_p95_latency_ms": 210,
+    "redis_connected_clients": 0,
+    "redis_max_clients": 0,
+    "redis_timeout_count": 0,
+    "database_slow_queries": 0
+  }
+}
